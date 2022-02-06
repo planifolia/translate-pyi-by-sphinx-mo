@@ -2,27 +2,29 @@ import argparse
 import ast
 import gettext
 import re
-from pathlib import Path
 from typing import List, Tuple
 
 import astor
+from sphinx.writers.text import my_wrap as sphinx_wrap
+
 
 SECTION_DECORATOR = '=-`:.\'\"~^_*+#'
 LIST_DECORATORS = ['-', '*', '#.', '|']
 ORDERED_LIST_PATTERN = re.compile(r'^\d+\.')
-LIST_TABLE_DECORATORS = ['.. list-table::', '* -']
-
-SCRIPT_DIR = Path(__file__).absolute().parent
 
 
 class TranslationBuffer():
-    def __init__(self, translator: gettext.NullTranslations):
-        self.translator = translator
+    def __init__(self, translation: gettext.NullTranslations, line_width: int, base_indent: str):
+        self.translation = translation
+        self.line_width = line_width
+        self.base_indent = base_indent
+        self.start_at = -1
         self.indent = ''
         self.lines = []
         self.original_lines = []
 
     def _reset(self):
+        self.start_at = -1
         self.indent = ''
         self.lines = []
         self.original_lines = []
@@ -36,12 +38,25 @@ class TranslationBuffer():
         if not self.lines:
             return []
         original_text = ' '.join(self.lines)
-        translated = self.indent + self.translator.gettext(original_text)
+        translated = self.translation.gettext(original_text)
+        if self.line_width <= 0:
+            translated_lines = [self.indent + translated]
+        else:
+            indent_size = max(len(self.indent), len(self.base_indent))
+            if self.start_at == 0:
+                first_size = max(len(self.indent), len(self.base_indent) + len('"""'))
+            else:
+                first_size = indent_size
+            translated_lines = sphinx_wrap(translated, self.line_width - first_size)
+            translated_lines[0] = self.indent + translated_lines[0]
+            for i in range(1, len(translated_lines)):
+                translated_lines[i] = (' ' * indent_size) + translated_lines[i]
         self._reset()
-        return [translated]
+        return translated_lines
 
-    def put(self, indent: str, text: str, original: str):
+    def put(self, line_no: int, indent: str, text: str, original: str):
         if not self.lines:
+            self.start_at = line_no
             self.indent = indent
         self.lines.append(text)
         self.original_lines.append(original)
@@ -75,20 +90,12 @@ def _try_split_list_header(text: str) -> Tuple[bool, str, str]:
     return False, '', text
 
 
-def _try_split_list_table_header(text: str) -> Tuple[bool, str, str]:
-    for decorator in LIST_TABLE_DECORATORS:
-        if text.startswith(decorator + ' '):
-            header, text = _split_header(text, decorator)
-            return True, header, text
-    return False, '', text
-
-
-def translate_docstring(original: str, translator: gettext.NullTranslations) -> str:
-    buffer = TranslationBuffer(translator)
-    translated = []
+def translate_docstring(original: str, translation: gettext.NullTranslations, line_width: int) -> str:
 
     original_lines = original.splitlines()
     base_indent = original_lines[-1]
+    buffer = TranslationBuffer(translation, line_width, base_indent)
+    translated = []
 
     for line_no, line in enumerate(original_lines):
         text = line.strip()
@@ -111,30 +118,23 @@ def translate_docstring(original: str, translator: gettext.NullTranslations) -> 
         text_is_list, header, body = _try_split_list_header(text)
         if text_is_list:
             translated.extend(buffer.flush_translated())
-            buffer.put(indent + header, body, line)
-            continue
-
-        # list table
-        text_is_list_table, header, body = _try_split_list_table_header(text)
-        if text_is_list_table:
-            translated.extend(buffer.flush_translated())
-            buffer.put(indent + header, body, line)
+            buffer.put(line_no, indent + header, body, line)
             continue
 
         # indent
         if len(indent) > (len(base_indent) if line_no == 1 else len(buffer.indent)):
             translated.extend(buffer.flush_translated())
-            buffer.put(indent, text, line)
+            buffer.put(line_no, indent, text, line)
             continue
 
         # unindent
         if len(indent) < len(buffer.indent):
             translated.extend(buffer.flush_translated())
-            buffer.put(indent, text, line)
+            buffer.put(line_no, indent, text, line)
             continue
 
         # paragraph
-        buffer.put(indent, text, line)
+        buffer.put(line_no, indent, text, line)
 
     translated.extend(buffer.flush_translated())
 
@@ -143,18 +143,19 @@ def translate_docstring(original: str, translator: gettext.NullTranslations) -> 
 
 class DocStringTranslator(ast.NodeTransformer):
 
-    def __init__(self, translator: gettext.NullTranslations):
-        self.translator = translator
+    def __init__(self, translation: gettext.NullTranslations, line_width: int):
+        self.translation = translation
+        self.line_width = line_width
 
-    def visit_Str(self, node):
-        node.s = translate_docstring(node.s, self.translator)
+    def visit_Str(self, node: ast.Module):
+        node.s = translate_docstring(node.s, self.translation, self.line_width)
         return node
 
 
-def translate_pyi(source_code: str, translator: gettext.NullTranslations) -> str:
+def translate_pyi_source(source_code: str, translation: gettext.NullTranslations, line_width: int) -> str:
 
     node = ast.parse(source_code)
-    DocStringTranslator(translator).visit(node)
+    DocStringTranslator(translation, line_width).visit(node)
     return astor.to_source(node)
 
 
@@ -170,7 +171,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         'language', type=str, help='language which translation into')
     parser.add_argument(
-        '--output', '-o', type=str, default=None, help='output .pyi file path or output to stdout')
+        '--output', '-o', type=str, default=None,
+        help='output .pyi file path or output to stdout')
+    parser.add_argument(
+        '--line-width', '-l', type=int, default=72,
+        help='line width limitation of source code. if 0 is specified, line width is not limited')
     return parser.parse_args()
 
 
@@ -180,9 +185,9 @@ if __name__ == '__main__':
     with open(args.pyi, encoding='utf-8') as f:
         original_code = f.read()
 
-    translator = gettext.translation(
+    translation = gettext.translation(
         args.domain, args.locale_dir, [args.language])
-    translated_code = translate_pyi(original_code, translator)
+    translated_code = translate_pyi_source(original_code, translation, args.line_width)
 
     if args.output is None:
         print(translated_code)
