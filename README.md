@@ -1,0 +1,1 @@
+# translate-pyi-by-sphinx-mo
