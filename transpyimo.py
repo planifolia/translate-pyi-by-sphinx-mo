@@ -2,9 +2,13 @@ import argparse
 import ast
 import gettext
 import re
+from pathlib import Path
 from typing import List, Tuple
 
 import astor
+from babel import Locale
+from babel.messages import pofile
+from babel.messages import mofile
 from sphinx.writers.text import my_wrap as sphinx_wrap
 
 
@@ -62,6 +66,14 @@ class TranslationBuffer():
         self.original_lines.append(original)
 
 
+def _split_indent(line: str) -> Tuple[str, str]:
+    text = line.strip()
+    if not text:
+        return line, ''
+    indent = line[:line.find(text)]
+    return indent, text
+
+
 def _is_section_decoration(text: str) -> bool:
     c = text[0]
     if not c in SECTION_DECORATOR:
@@ -93,12 +105,12 @@ def _try_split_list_header(text: str) -> Tuple[bool, str, str]:
 def translate_docstring(original: str, translation: gettext.NullTranslations, line_width: int) -> str:
 
     original_lines = original.splitlines()
-    base_indent = original_lines[-1]
+    base_indent, _ = _split_indent(original_lines[-1])
     buffer = TranslationBuffer(translation, line_width, base_indent)
     translated = []
 
     for line_no, line in enumerate(original_lines):
-        text = line.strip()
+        indent, text = _split_indent(line)
 
         # blank line
         if not line.strip():
@@ -111,8 +123,6 @@ def translate_docstring(original: str, translation: gettext.NullTranslations, li
             translated.extend(buffer.flush_original())
             translated.append(line)
             continue
-
-        indent = line[:line.find(text)]
 
         # list
         text_is_list, header, body = _try_split_list_header(text)
@@ -152,6 +162,15 @@ class DocStringTranslator(ast.NodeTransformer):
         return node
 
 
+def compile_mo(domain: str, locale_dir: str, language: str):
+    locale = Locale(language)
+    file_path_base = Path(locale_dir) / language / 'LC_MESSAGES' / (domain)
+    with open(str(file_path_base) + '.po', mode='r', encoding='utf-8') as po_file:
+        catalog = pofile.read_po(po_file, locale)
+    with open(str(file_path_base) + '.mo', mode='wb') as mo_file:
+        mofile.write_mo(mo_file, catalog)
+
+
 def translate_pyi_source(source_code: str, translation: gettext.NullTranslations, line_width: int) -> str:
 
     node = ast.parse(source_code)
@@ -159,30 +178,37 @@ def translate_pyi_source(source_code: str, translation: gettext.NullTranslations
     return astor.to_source(node)
 
 
-def parse_args() -> argparse.Namespace:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='.pyi file translater with Sphinx .mo file')
     parser.add_argument(
         'pyi', type=str, help='.pyi file path for translation')
     parser.add_argument(
-        'domain', type=str, help='translation domain')
+        'domain', type=str, help='Translation domain')
     parser.add_argument(
-        'locale_dir', type=str, help='locale path output by sphinx-intl')
+        'locale_dir', type=str, help='Locale path output by sphinx-intl')
     parser.add_argument(
-        'language', type=str, help='language which translation into')
+        'language', type=str, help='Language which translation into')
     parser.add_argument(
         '--output', '-o', type=str, default=None,
-        help='output .pyi file path or output to stdout')
+        help='Output .pyi file path or output to stdout')
     parser.add_argument(
         '--line-width', '-l', type=int, default=72,
-        help='line width limitation of source code. if 0 is specified, line width is not limited')
+        help='Line width limitation of source code. if 0 is specified, line width is not limited. default is 72')
+    parser.add_argument(
+        '--compile-mo', '-c',  default=False, action='store_true',
+        help='Compile .po file to .mo file before translation')
     return parser.parse_args()
 
 
 if __name__ == '__main__':
 
-    args = parse_args()
-    with open(args.pyi, encoding='utf-8') as f:
+    args = _parse_args()
+
+    if args.compile_mo:
+        compile_mo(args.domain, args.locale_dir, args.language)
+
+    with open(args.pyi, mode='r', encoding='utf-8') as f:
         original_code = f.read()
 
     translation = gettext.translation(
@@ -193,5 +219,5 @@ if __name__ == '__main__':
         print(translated_code)
     else:
         with open(args.output, mode='w', encoding='utf-8') as f:
-            f.write(original_code)
+            f.write(translated_code)
 
