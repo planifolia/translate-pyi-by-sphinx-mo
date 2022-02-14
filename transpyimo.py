@@ -48,10 +48,14 @@ class TranslationBuffer():
         else:
             indent_size = max(len(self.indent), len(self.base_indent))
             if self.start_at == 0:
-                first_size = max(len(self.indent), len(self.base_indent) + len('"""'))
+                first_size = max(
+                    len(self.indent),
+                    len(self.base_indent) + len('"""')
+                )
             else:
                 first_size = indent_size
-            translated_lines = sphinx_wrap(translated, self.line_width - first_size)
+            translated_lines = sphinx_wrap(
+                translated, self.line_width - first_size)
             translated_lines[0] = self.indent + translated_lines[0]
             for i in range(1, len(translated_lines)):
                 translated_lines[i] = (' ' * indent_size) + translated_lines[i]
@@ -164,14 +168,14 @@ class DocStringTranslator(ast.NodeTransformer):
 
 def compile_mo(domain: str, locale_dir: str, language: str):
     locale = Locale(language)
-    file_path_base = Path(locale_dir) / language / 'LC_MESSAGES' / (domain)
-    with open(str(file_path_base) + '.po', mode='r', encoding='utf-8') as po_file:
+    file_path_base = Path(locale_dir) / language / 'LC_MESSAGES' / domain
+    with open(file_path_base.with_suffix('.po'), mode='r', encoding='utf-8') as po_file:
         catalog = pofile.read_po(po_file, locale)
-    with open(str(file_path_base) + '.mo', mode='wb') as mo_file:
+    with open(file_path_base.with_suffix('.mo'), mode='wb') as mo_file:
         mofile.write_mo(mo_file, catalog)
 
 
-def translate_pyi_source(source_code: str, translation: gettext.NullTranslations, line_width: int) -> str:
+def translate_pyi_source(source_code: str, translation: gettext.NullTranslations, line_width: int = 72) -> str:
 
     node = ast.parse(source_code)
     DocStringTranslator(translation, line_width).visit(node)
@@ -213,11 +217,11 @@ if __name__ == '__main__':
 
     translation = gettext.translation(
         args.domain, args.locale_dir, [args.language])
-    translated_code = translate_pyi_source(original_code, translation, args.line_width)
+    translated_code = translate_pyi_source(
+        original_code, translation, args.line_width)
 
     if args.output is None:
         print(translated_code)
     else:
         with open(args.output, mode='w', encoding='utf-8') as f:
             f.write(translated_code)
-
