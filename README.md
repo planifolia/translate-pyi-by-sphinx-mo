@@ -49,7 +49,7 @@ This tool and translation flow depends on the following awesome tools and librar
 # How to use
 
 ``` sh
-# python3 transpyimo.py path/to/source_code.py mo_file_domain_name path/to/locale language -l line_width -c(default: 72)
+# python3 transpyimo.py path/to/source_code.py mo_file_domain_name path/to/locale language -l line_width(default: 72) -c
 # e.g.
 python3 transpyimo.py src/source_code.py source_code doc/locale ja
 ```
